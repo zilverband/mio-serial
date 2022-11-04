@@ -11,6 +11,16 @@
 #![warn(rust_2018_idioms)]
 
 // Enums, Structs, and Traits from the serialport crate
+use std::convert::TryFrom;
+use std::io::{Error as StdIoError, ErrorKind as StdIoErrorKind, Result as StdIoResult};
+use std::time::Duration;
+
+use mio::event::Source;
+use mio::{Interest, Registry, Token};
+// Re-export port-enumerating utility function.
+pub use serialport::available_ports;
+// Re-export creation of SerialPortBuilder objects
+pub use serialport::new;
 pub use serialport::{
     // Enums
     ClearBuffer,
@@ -31,37 +41,29 @@ pub use serialport::{
     UsbPortInfo,
 };
 
-// Re-export port-enumerating utility function.
-pub use serialport::available_ports;
-
-// Re-export creation of SerialPortBuilder objects
-pub use serialport::new;
-
-use mio::{event::Source, Interest, Registry, Token};
-use std::convert::TryFrom;
-use std::io::{Error as StdIoError, ErrorKind as StdIoErrorKind, Result as StdIoResult};
-use std::time::Duration;
-
 #[cfg(unix)]
-mod os_prelude {
+mod os_prelude
+{
+    pub use std::os::unix::prelude::*;
+
     pub use mio::unix::SourceFd;
     pub use nix::{self, libc};
     pub use serialport::TTYPort as NativeBlockingSerialPort;
-    pub use std::os::unix::prelude::*;
 }
 
 #[cfg(windows)]
-mod os_prelude {
-    pub use mio::windows::NamedPipe;
-    pub use serialport::COMPort as NativeBlockingSerialPort;
+mod os_prelude
+{
     pub use std::ffi::OsStr;
     pub use std::io::{self, Read, Write};
-    pub use std::mem;
     pub use std::os::windows::ffi::OsStrExt;
     pub use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
     pub use std::path::Path;
-    pub use std::ptr;
     pub use std::time::Duration;
+    pub use std::{mem, ptr};
+
+    pub use mio::windows::NamedPipe;
+    pub use serialport::COMPort as NativeBlockingSerialPort;
     pub use winapi::shared::minwindef::TRUE;
     pub use winapi::um::commapi::SetCommTimeouts;
     pub use winapi::um::fileapi::*;
@@ -76,7 +78,8 @@ use os_prelude::*;
 
 /// SerialStream
 #[derive(Debug)]
-pub struct SerialStream {
+pub struct SerialStream
+{
     #[cfg(unix)]
     inner: serialport::TTYPort,
     #[cfg(windows)]
@@ -86,26 +89,30 @@ pub struct SerialStream {
 }
 
 #[cfg(unix)]
-fn map_nix_error(e: nix::Error) -> crate::Error {
+fn map_nix_error(e: nix::Error) -> crate::Error
+{
     crate::Error {
         kind: crate::ErrorKind::Io(StdIoErrorKind::Other),
         description: e.to_string(),
     }
 }
 
-impl SerialStream {
+impl SerialStream
+{
     /// Open a nonblocking serial port from the provided builder
     ///
     /// ## Example
     ///
     /// ```no_run
-    /// use mio_serial::{SerialPortBuilder, SerialStream};
     /// use std::path::Path;
+    ///
+    /// use mio_serial::{SerialPortBuilder, SerialStream};
     ///
     /// let args = mio_serial::new("/dev/ttyUSB0", 9600);
     /// let serial = SerialStream::open(&args).unwrap();
     /// ```
-    pub fn open(builder: &crate::SerialPortBuilder) -> crate::Result<Self> {
+    pub fn open(builder: &crate::SerialPortBuilder) -> crate::Result<Self>
+    {
         log::debug!("opening serial port in synchronous blocking mode");
         let port = NativeBlockingSerialPort::open(builder)?;
         Self::try_from(port)
@@ -128,7 +135,8 @@ impl SerialStream {
     /// let (master, slave) = SerialStream::pair().unwrap();
     /// ```
     #[cfg(unix)]
-    pub fn pair() -> crate::Result<(Self, Self)> {
+    pub fn pair() -> crate::Result<(Self, Self)>
+    {
         let (master, slave) = NativeBlockingSerialPort::pair()?;
 
         let master = Self::try_from(master)?;
@@ -148,7 +156,8 @@ impl SerialStream {
     ///
     /// * `Io` for any error while setting exclusivity for the port.
     #[cfg(unix)]
-    pub fn set_exclusive(&mut self, exclusive: bool) -> crate::Result<()> {
+    pub fn set_exclusive(&mut self, exclusive: bool) -> crate::Result<()>
+    {
         self.inner.set_exclusive(exclusive)
     }
 
@@ -157,18 +166,20 @@ impl SerialStream {
     /// If a port is exclusive, then trying to open the same device path again
     /// will fail.
     #[cfg(unix)]
-    pub fn exclusive(&self) -> bool {
+    pub fn exclusive(&self) -> bool
+    {
         self.inner.exclusive()
     }
 
-    /// Attempts to clone the `SerialPort`. This allow you to write and read simultaneously from the
-    /// same serial connection.
+    /// Attempts to clone the `SerialPort`. This allow you to write and read
+    /// simultaneously from the same serial connection.
     ///
-    /// Also, you must be very careful when changing the settings of a cloned `SerialPort` : since
-    /// the settings are cached on a per object basis, trying to modify them from two different
-    /// objects can cause some nasty behavior.
+    /// Also, you must be very careful when changing the settings of a cloned `SerialPort`
+    /// : since the settings are cached on a per object basis, trying to modify them
+    /// from two different objects can cause some nasty behavior.
     ///
-    /// This is the same as `SerialPort::try_clone()` but returns the concrete type instead.
+    /// This is the same as `SerialPort::try_clone()` but returns the concrete type
+    /// instead.
     ///
     /// # Errors
     ///
@@ -176,21 +187,23 @@ impl SerialStream {
     ///
     /// # DON'T USE THIS AS-IS
     ///
-    /// This logic has never really completely worked.  Cloned file descriptors in asynchronous
-    /// code is a semantic minefield.  Are you cloning the file descriptor?  Are you cloning the
-    /// event flags on the file descriptor?  Both?  It's a bit of a mess even within one OS,
-    /// let alone across multiple OS's
+    /// This logic has never really completely worked.  Cloned file descriptors in
+    /// asynchronous code is a semantic minefield.  Are you cloning the file
+    /// descriptor?  Are you cloning the event flags on the file descriptor?  Both?
+    /// It's a bit of a mess even within one OS, let alone across multiple OS's
     ///
-    /// Maybe it can be done with more work, but until a clear use-case is required (or mio/tokio
-    /// gets an equivalent of the unix `AsyncFd` for async file handles, see
+    /// Maybe it can be done with more work, but until a clear use-case is required (or
+    /// mio/tokio gets an equivalent of the unix `AsyncFd` for async file handles, see
     /// https://github.com/tokio-rs/tokio/issues/3781 and
     /// https://github.com/tokio-rs/tokio/pull/3760#issuecomment-839854617) I would rather not
-    /// have any enabled code over a kind-of-works-maybe impl.  So I'll leave this code here
-    /// for now but hard-code it disabled.
+    /// have any enabled code over a kind-of-works-maybe impl.  So I'll leave this code
+    /// here for now but hard-code it disabled.
     #[cfg(never)]
-    pub fn try_clone_native(&self) -> Result<SerialStream> {
-        // This works so long as the underlying serialport-rs method doesn't do anything but
-        // duplicate the low-level file descriptor.  This is the case as of serialport-rs:4.0.1
+    pub fn try_clone_native(&self) -> Result<SerialStream>
+    {
+        // This works so long as the underlying serialport-rs method doesn't do anything
+        // but duplicate the low-level file descriptor.  This is the case as of
+        // serialport-rs:4.0.1
         let cloned_native = self.inner.try_clone_native()?;
         #[cfg(unix)]
         {
@@ -202,7 +215,8 @@ impl SerialStream {
         {
             // Same procedure as used in serialport-rs for duplicating raw handles
             // https://docs.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle
-            // states that it can be used as well for pipes created with CreateNamedPipe as well
+            // states that it can be used as well for pipes created with CreateNamedPipe
+            // as well
             let pipe_handle = self.pipe.as_raw_handle();
 
             let process_handle: HANDLE = unsafe { GetCurrentProcess() };
@@ -218,7 +232,8 @@ impl SerialStream {
                     DUPLICATE_SAME_ACCESS,
                 );
                 if cloned_pipe_handle != INVALID_HANDLE_VALUE {
-                    let cloned_pipe = unsafe { NamedPipe::from_raw_handle(cloned_pipe_handle) };
+                    let cloned_pipe =
+                        unsafe { NamedPipe::from_raw_handle(cloned_pipe_handle) };
                     Ok(Self {
                         inner: mem::ManuallyDrop::new(cloned_native),
                         pipe: cloned_pipe,
@@ -231,70 +246,80 @@ impl SerialStream {
     }
 }
 
-impl crate::SerialPort for SerialStream {
+impl crate::SerialPort for SerialStream
+{
     /// Return the name associated with the serial port, if known.
     #[inline(always)]
-    fn name(&self) -> Option<String> {
+    fn name(&self) -> Option<String>
+    {
         self.inner.name()
     }
 
     /// Returns the current baud rate.
     ///
-    /// This function returns `None` if the baud rate could not be determined. This may occur if
-    /// the hardware is in an uninitialized state. Setting a baud rate with `set_baud_rate()`
-    /// should initialize the baud rate to a supported value.
+    /// This function returns `None` if the baud rate could not be determined. This may
+    /// occur if the hardware is in an uninitialized state. Setting a baud rate with
+    /// `set_baud_rate()` should initialize the baud rate to a supported value.
     #[inline(always)]
-    fn baud_rate(&self) -> crate::Result<u32> {
+    fn baud_rate(&self) -> crate::Result<u32>
+    {
         self.inner.baud_rate()
     }
 
     /// Returns the character size.
     ///
-    /// This function returns `None` if the character size could not be determined. This may occur
-    /// if the hardware is in an uninitialized state or is using a non-standard character size.
-    /// Setting a baud rate with `set_char_size()` should initialize the character size to a
-    /// supported value.
+    /// This function returns `None` if the character size could not be determined. This
+    /// may occur if the hardware is in an uninitialized state or is using a
+    /// non-standard character size. Setting a baud rate with `set_char_size()` should
+    /// initialize the character size to a supported value.
     #[inline(always)]
-    fn data_bits(&self) -> crate::Result<crate::DataBits> {
+    fn data_bits(&self) -> crate::Result<crate::DataBits>
+    {
         self.inner.data_bits()
     }
 
     /// Returns the flow control mode.
     ///
-    /// This function returns `None` if the flow control mode could not be determined. This may
-    /// occur if the hardware is in an uninitialized state or is using an unsupported flow control
-    /// mode. Setting a flow control mode with `set_flow_control()` should initialize the flow
-    /// control mode to a supported value.
+    /// This function returns `None` if the flow control mode could not be determined.
+    /// This may occur if the hardware is in an uninitialized state or is using an
+    /// unsupported flow control mode. Setting a flow control mode with
+    /// `set_flow_control()` should initialize the flow control mode to a supported
+    /// value.
     #[inline(always)]
-    fn flow_control(&self) -> crate::Result<crate::FlowControl> {
+    fn flow_control(&self) -> crate::Result<crate::FlowControl>
+    {
         self.inner.flow_control()
     }
 
     /// Returns the parity-checking mode.
     ///
-    /// This function returns `None` if the parity mode could not be determined. This may occur if
-    /// the hardware is in an uninitialized state or is using a non-standard parity mode. Setting
-    /// a parity mode with `set_parity()` should initialize the parity mode to a supported value.
+    /// This function returns `None` if the parity mode could not be determined. This may
+    /// occur if the hardware is in an uninitialized state or is using a non-standard
+    /// parity mode. Setting a parity mode with `set_parity()` should initialize the
+    /// parity mode to a supported value.
     #[inline(always)]
-    fn parity(&self) -> crate::Result<crate::Parity> {
+    fn parity(&self) -> crate::Result<crate::Parity>
+    {
         self.inner.parity()
     }
 
     /// Returns the number of stop bits.
     ///
-    /// This function returns `None` if the number of stop bits could not be determined. This may
-    /// occur if the hardware is in an uninitialized state or is using an unsupported stop bit
-    /// configuration. Setting the number of stop bits with `set_stop-bits()` should initialize the
-    /// stop bits to a supported value.
+    /// This function returns `None` if the number of stop bits could not be determined.
+    /// This may occur if the hardware is in an uninitialized state or is using an
+    /// unsupported stop bit configuration. Setting the number of stop bits with
+    /// `set_stop-bits()` should initialize the stop bits to a supported value.
     #[inline(always)]
-    fn stop_bits(&self) -> crate::Result<crate::StopBits> {
+    fn stop_bits(&self) -> crate::Result<crate::StopBits>
+    {
         self.inner.stop_bits()
     }
 
-    /// Returns the current timeout. This parameter is const and equal to zero and implemented due
-    /// to required for trait completeness.
+    /// Returns the current timeout. This parameter is const and equal to zero and
+    /// implemented due to required for trait completeness.
     #[inline(always)]
-    fn timeout(&self) -> Duration {
+    fn timeout(&self) -> Duration
+    {
         Duration::from_secs(0)
     }
 
@@ -302,17 +327,19 @@ impl crate::SerialPort for SerialStream {
     ///
     /// ## Errors
     ///
-    /// If the implementation does not support the requested baud rate, this function may return an
-    /// `InvalidInput` error. Even if the baud rate is accepted by `set_baud_rate()`, it may not be
-    /// supported by the underlying hardware.
+    /// If the implementation does not support the requested baud rate, this function may
+    /// return an `InvalidInput` error. Even if the baud rate is accepted by
+    /// `set_baud_rate()`, it may not be supported by the underlying hardware.
     #[inline(always)]
-    fn set_baud_rate(&mut self, baud_rate: u32) -> crate::Result<()> {
+    fn set_baud_rate(&mut self, baud_rate: u32) -> crate::Result<()>
+    {
         self.inner.set_baud_rate(baud_rate)
     }
 
     /// Sets the character size.
     #[inline(always)]
-    fn set_data_bits(&mut self, data_bits: crate::DataBits) -> crate::Result<()> {
+    fn set_data_bits(&mut self, data_bits: crate::DataBits) -> crate::Result<()>
+    {
         self.inner.set_data_bits(data_bits)
     }
 
@@ -320,58 +347,67 @@ impl crate::SerialPort for SerialStream {
 
     /// Sets the flow control mode.
     #[inline(always)]
-    fn set_flow_control(&mut self, flow_control: crate::FlowControl) -> crate::Result<()> {
+    fn set_flow_control(&mut self, flow_control: crate::FlowControl)
+        -> crate::Result<()>
+    {
         self.inner.set_flow_control(flow_control)
     }
 
     /// Sets the parity-checking mode.
     #[inline(always)]
-    fn set_parity(&mut self, parity: crate::Parity) -> crate::Result<()> {
+    fn set_parity(&mut self, parity: crate::Parity) -> crate::Result<()>
+    {
         self.inner.set_parity(parity)
     }
 
     /// Sets the number of stop bits.
     #[inline(always)]
-    fn set_stop_bits(&mut self, stop_bits: crate::StopBits) -> crate::Result<()> {
+    fn set_stop_bits(&mut self, stop_bits: crate::StopBits) -> crate::Result<()>
+    {
         self.inner.set_stop_bits(stop_bits)
     }
 
     /// Sets the timeout for future I/O operations. This parameter is ignored but
     /// required for trait completeness.
     #[inline(always)]
-    fn set_timeout(&mut self, _: Duration) -> crate::Result<()> {
+    fn set_timeout(&mut self, _: Duration) -> crate::Result<()>
+    {
         Ok(())
     }
 
     /// Sets the state of the RTS (Request To Send) control signal.
     ///
-    /// Setting a value of `true` asserts the RTS control signal. `false` clears the signal.
+    /// Setting a value of `true` asserts the RTS control signal. `false` clears the
+    /// signal.
     ///
     /// ## Errors
     ///
-    /// This function returns an error if the RTS control signal could not be set to the desired
-    /// state on the underlying hardware:
+    /// This function returns an error if the RTS control signal could not be set to the
+    /// desired state on the underlying hardware:
     ///
     /// * `NoDevice` if the device was disconnected.
     /// * `Io` for any other type of I/O error.
     #[inline(always)]
-    fn write_request_to_send(&mut self, level: bool) -> crate::Result<()> {
+    fn write_request_to_send(&mut self, level: bool) -> crate::Result<()>
+    {
         self.inner.write_request_to_send(level)
     }
 
     /// Writes to the Data Terminal Ready pin
     ///
-    /// Setting a value of `true` asserts the DTR control signal. `false` clears the signal.
+    /// Setting a value of `true` asserts the DTR control signal. `false` clears the
+    /// signal.
     ///
     /// ## Errors
     ///
-    /// This function returns an error if the DTR control signal could not be set to the desired
-    /// state on the underlying hardware:
+    /// This function returns an error if the DTR control signal could not be set to the
+    /// desired state on the underlying hardware:
     ///
     /// * `NoDevice` if the device was disconnected.
     /// * `Io` for any other type of I/O error.
     #[inline(always)]
-    fn write_data_terminal_ready(&mut self, level: bool) -> crate::Result<()> {
+    fn write_data_terminal_ready(&mut self, level: bool) -> crate::Result<()>
+    {
         self.inner.write_data_terminal_ready(level)
     }
 
@@ -379,33 +415,37 @@ impl crate::SerialPort for SerialStream {
 
     /// Reads the state of the CTS (Clear To Send) control signal.
     ///
-    /// This function returns a boolean that indicates whether the CTS control signal is asserted.
+    /// This function returns a boolean that indicates whether the CTS control signal is
+    /// asserted.
     ///
     /// ## Errors
     ///
-    /// This function returns an error if the state of the CTS control signal could not be read
-    /// from the underlying hardware:
+    /// This function returns an error if the state of the CTS control signal could not be
+    /// read from the underlying hardware:
     ///
     /// * `NoDevice` if the device was disconnected.
     /// * `Io` for any other type of I/O error.
     #[inline(always)]
-    fn read_clear_to_send(&mut self) -> crate::Result<bool> {
+    fn read_clear_to_send(&mut self) -> crate::Result<bool>
+    {
         self.inner.read_clear_to_send()
     }
 
     /// Reads the state of the Data Set Ready control signal.
     ///
-    /// This function returns a boolean that indicates whether the DSR control signal is asserted.
+    /// This function returns a boolean that indicates whether the DSR control signal is
+    /// asserted.
     ///
     /// ## Errors
     ///
-    /// This function returns an error if the state of the DSR control signal could not be read
-    /// from the underlying hardware:
+    /// This function returns an error if the state of the DSR control signal could not be
+    /// read from the underlying hardware:
     ///
     /// * `NoDevice` if the device was disconnected.
     /// * `Io` for any other type of I/O error.
     #[inline(always)]
-    fn read_data_set_ready(&mut self) -> crate::Result<bool> {
+    fn read_data_set_ready(&mut self) -> crate::Result<bool>
+    {
         self.inner.read_data_set_ready()
     }
 
@@ -413,33 +453,37 @@ impl crate::SerialPort for SerialStream {
 
     /// Reads the state of the Ring Indicator control signal.
     ///
-    /// This function returns a boolean that indicates whether the RI control signal is asserted.
+    /// This function returns a boolean that indicates whether the RI control signal is
+    /// asserted.
     ///
     /// ## Errors
     ///
-    /// This function returns an error if the state of the RI control signal could not be read from
-    /// the underlying hardware:
+    /// This function returns an error if the state of the RI control signal could not be
+    /// read from the underlying hardware:
     ///
     /// * `NoDevice` if the device was disconnected.
     /// * `Io` for any other type of I/O error.
     #[inline(always)]
-    fn read_ring_indicator(&mut self) -> crate::Result<bool> {
+    fn read_ring_indicator(&mut self) -> crate::Result<bool>
+    {
         self.inner.read_ring_indicator()
     }
 
     /// Reads the state of the Carrier Detect control signal.
     ///
-    /// This function returns a boolean that indicates whether the CD control signal is asserted.
+    /// This function returns a boolean that indicates whether the CD control signal is
+    /// asserted.
     ///
     /// ## Errors
     ///
-    /// This function returns an error if the state of the CD control signal could not be read from
-    /// the underlying hardware:
+    /// This function returns an error if the state of the CD control signal could not be
+    /// read from the underlying hardware:
     ///
     /// * `NoDevice` if the device was disconnected.
     /// * `Io` for any other type of I/O error.
     #[inline(always)]
-    fn read_carrier_detect(&mut self) -> crate::Result<bool> {
+    fn read_carrier_detect(&mut self) -> crate::Result<bool>
+    {
         self.inner.read_carrier_detect()
     }
 
@@ -452,7 +496,8 @@ impl crate::SerialPort for SerialStream {
     /// * `NoDevice` if the device was disconnected.
     /// * `Io` for any other type of I/O error.
     #[inline(always)]
-    fn bytes_to_read(&self) -> crate::Result<u32> {
+    fn bytes_to_read(&self) -> crate::Result<u32>
+    {
         self.inner.bytes_to_read()
     }
 
@@ -465,7 +510,8 @@ impl crate::SerialPort for SerialStream {
     /// * `NoDevice` if the device was disconnected.
     /// * `Io` for any other type of I/O error.
     #[inline(always)]
-    fn bytes_to_write(&self) -> crate::Result<u32> {
+    fn bytes_to_write(&self) -> crate::Result<u32>
+    {
         self.inner.bytes_to_write()
     }
 
@@ -478,42 +524,45 @@ impl crate::SerialPort for SerialStream {
     /// * `NoDevice` if the device was disconnected.
     /// * `Io` for any other type of I/O error.
     #[inline(always)]
-    fn clear(&self, buffer_to_clear: crate::ClearBuffer) -> crate::Result<()> {
+    fn clear(&self, buffer_to_clear: crate::ClearBuffer) -> crate::Result<()>
+    {
         self.inner.clear(buffer_to_clear)
     }
 
-    /// Attempts to clone the `SerialPort`. This allow you to write and read simultaneously from the
-    /// same serial connection. Please note that if you want a real asynchronous serial port you
-    /// should look at [mio-serial](https://crates.io/crates/mio-serial) or
+    /// Attempts to clone the `SerialPort`. This allow you to write and read
+    /// simultaneously from the same serial connection. Please note that if you want a
+    /// real asynchronous serial port you should look at [mio-serial](https://crates.io/crates/mio-serial) or
     /// [tokio-serial](https://crates.io/crates/tokio-serial).
     ///
-    /// Also, you must be very carefull when changing the settings of a cloned `SerialPort` : since
-    /// the settings are cached on a per object basis, trying to modify them from two different
-    /// objects can cause some nasty behavior.
+    /// Also, you must be very carefull when changing the settings of a cloned
+    /// `SerialPort` : since the settings are cached on a per object basis, trying to
+    /// modify them from two different objects can cause some nasty behavior.
     ///
     /// # Errors
     ///
     /// This function returns an error if the serial port couldn't be cloned.
     #[inline(always)]
     #[cfg(never)]
-    fn try_clone(&self) -> crate::Result<Box<dyn crate::SerialPort>> {
+    fn try_clone(&self) -> crate::Result<Box<dyn crate::SerialPort>>
+    {
         Ok(Box::new(self.try_clone_native()?))
     }
 
     /// Cloning is not supported for SerialStream objects
     ///
-    /// This logic has never really completely worked.  Cloned file descriptors in asynchronous
-    /// code is a semantic minefield.  Are you cloning the file descriptor?  Are you cloning the
-    /// event flags on the file descriptor?  Both?  It's a bit of a mess even within one OS,
-    /// let alone across multiple OS's
+    /// This logic has never really completely worked.  Cloned file descriptors in
+    /// asynchronous code is a semantic minefield.  Are you cloning the file
+    /// descriptor?  Are you cloning the event flags on the file descriptor?  Both?
+    /// It's a bit of a mess even within one OS, let alone across multiple OS's
     ///
-    /// Maybe it can be done with more work, but until a clear use-case is required (or mio/tokio
-    /// gets an equivalent of the unix `AsyncFd` for async file handles, see
+    /// Maybe it can be done with more work, but until a clear use-case is required (or
+    /// mio/tokio gets an equivalent of the unix `AsyncFd` for async file handles, see
     /// https://github.com/tokio-rs/tokio/issues/3781 and
     /// https://github.com/tokio-rs/tokio/pull/3760#issuecomment-839854617) I would rather not
-    /// have any code available over a kind-of-works-maybe impl.  So I'll leave this code here
-    /// for now but hard-code it disabled.
-    fn try_clone(&self) -> crate::Result<Box<dyn crate::SerialPort>> {
+    /// have any code available over a kind-of-works-maybe impl.  So I'll leave this code
+    /// here for now but hard-code it disabled.
+    fn try_clone(&self) -> crate::Result<Box<dyn crate::SerialPort>>
+    {
         Err(crate::Error::new(
             crate::ErrorKind::Io(StdIoErrorKind::Other),
             "cloning SerialStream is not supported",
@@ -522,21 +571,26 @@ impl crate::SerialPort for SerialStream {
 
     /// Start transmitting a break
     #[inline(always)]
-    fn set_break(&self) -> crate::Result<()> {
+    fn set_break(&self) -> crate::Result<()>
+    {
         self.inner.set_break()
     }
 
     /// Stop transmitting a break
     #[inline(always)]
-    fn clear_break(&self) -> crate::Result<()> {
+    fn clear_break(&self) -> crate::Result<()>
+    {
         self.inner.clear_break()
     }
 }
 
-impl TryFrom<NativeBlockingSerialPort> for SerialStream {
+impl TryFrom<NativeBlockingSerialPort> for SerialStream
+{
     type Error = crate::Error;
     #[cfg(unix)]
-    fn try_from(port: NativeBlockingSerialPort) -> std::result::Result<Self, Self::Error> {
+    fn try_from(port: NativeBlockingSerialPort)
+        -> std::result::Result<Self, Self::Error>
+    {
         log::debug!(
             "switching {} to asynchronous mode",
             port.name().unwrap_or_else(|| String::from("<UNKNOWN>"))
@@ -547,7 +601,8 @@ impl TryFrom<NativeBlockingSerialPort> for SerialStream {
 
         // Set VMIN = 1 to block until at least one character is received.
         t.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
-        termios::tcsetattr(port.as_raw_fd(), SetArg::TCSANOW, &t).map_err(map_nix_error)?;
+        termios::tcsetattr(port.as_raw_fd(), SetArg::TCSANOW, &t)
+            .map_err(map_nix_error)?;
 
         // Set the O_NONBLOCK flag.
         log::debug!("setting O_NONBLOCK flag");
@@ -556,21 +611,25 @@ impl TryFrom<NativeBlockingSerialPort> for SerialStream {
             return Err(StdIoError::last_os_error().into());
         }
 
-        match unsafe { libc::fcntl(port.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } {
+        match unsafe {
+            libc::fcntl(port.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK)
+        } {
             0 => Ok(SerialStream { inner: port }),
             _ => Err(StdIoError::last_os_error().into()),
         }
     }
     #[cfg(windows)]
-    fn try_from(port: NativeBlockingSerialPort) -> std::result::Result<Self, Self::Error> {
+    fn try_from(port: NativeBlockingSerialPort)
+        -> std::result::Result<Self, Self::Error>
+    {
         log::debug!(
             "switching {} to asynchronous mode",
             port.name().unwrap_or_else(|| String::from("<UNKNOWN>"))
         );
         log::debug!("reading serial port settings");
-        let name = port
-            .name()
-            .ok_or_else(|| crate::Error::new(crate::ErrorKind::NoDevice, "Empty device name"))?;
+        let name = port.name().ok_or_else(|| {
+            crate::Error::new(crate::ErrorKind::NoDevice, "Empty device name")
+        })?;
         let baud = port.baud_rate()?;
         let parity = port.parity()?;
         let data_bits = port.data_bits()?;
@@ -608,17 +667,21 @@ impl TryFrom<NativeBlockingSerialPort> for SerialStream {
         //
         // We need both the NamedPipe for Read/Write and COMPort for serialport related
         // actions.  Both are created using FromRawHandle which takes ownership of the
-        // handle which may case a double-free as both objects attempt to close the handle.
+        // handle which may case a double-free as both objects attempt to close the
+        // handle.
         //
         // Looking through the source for both NamedPipe and COMPort, NamedPipe does some
         // cleanup in Drop while COMPort just closes the handle.
         //
         // We'll use a ManuallyDrop<T> for COMPort and defer cleanup to the NamedPipe
         let pipe = unsafe { NamedPipe::from_raw_handle(handle) };
-        let mut com_port =
-            mem::ManuallyDrop::new(unsafe { serialport::COMPort::from_raw_handle(handle) });
+        let mut com_port = mem::ManuallyDrop::new(unsafe {
+            serialport::COMPort::from_raw_handle(handle)
+        });
 
-        log::debug!("re-setting serial port parameters to original values from synchronous port");
+        log::debug!(
+            "re-setting serial port parameters to original values from synchronous port"
+        );
         com_port.set_baud_rate(baud)?;
         com_port.set_parity(parity)?;
         com_port.set_data_bits(data_bits)?;
@@ -634,13 +697,15 @@ impl TryFrom<NativeBlockingSerialPort> for SerialStream {
 }
 
 #[cfg(unix)]
-mod io {
-    use super::{SerialStream, StdIoError, StdIoResult};
+mod io
+{
+    use std::io::{ErrorKind as StdIoErrorKind, Read, Write};
+    use std::os::unix::prelude::*;
+
     use nix::libc;
     use nix::sys::termios;
-    use std::io::ErrorKind as StdIoErrorKind;
-    use std::io::{Read, Write};
-    use std::os::unix::prelude::*;
+
+    use super::{SerialStream, StdIoError, StdIoResult};
 
     macro_rules! uninterruptibly {
         ($e:expr) => {{
@@ -653,8 +718,10 @@ mod io {
         }};
     }
 
-    impl Read for SerialStream {
-        fn read(&mut self, bytes: &mut [u8]) -> StdIoResult<usize> {
+    impl Read for SerialStream
+    {
+        fn read(&mut self, bytes: &mut [u8]) -> StdIoResult<usize>
+        {
             uninterruptibly!(match unsafe {
                 libc::read(
                     self.as_raw_fd(),
@@ -668,8 +735,10 @@ mod io {
         }
     }
 
-    impl Write for SerialStream {
-        fn write(&mut self, bytes: &[u8]) -> StdIoResult<usize> {
+    impl Write for SerialStream
+    {
+        fn write(&mut self, bytes: &[u8]) -> StdIoResult<usize>
+        {
             uninterruptibly!(match unsafe {
                 libc::write(
                     self.as_raw_fd(),
@@ -682,13 +751,18 @@ mod io {
             })
         }
 
-        fn flush(&mut self) -> StdIoResult<()> {
-            uninterruptibly!(termios::tcdrain(self.inner.as_raw_fd()).map_err(StdIoError::from))
+        fn flush(&mut self) -> StdIoResult<()>
+        {
+            uninterruptibly!(
+                termios::tcdrain(self.inner.as_raw_fd()).map_err(StdIoError::from)
+            )
         }
     }
 
-    impl<'a> Read for &'a SerialStream {
-        fn read(&mut self, bytes: &mut [u8]) -> StdIoResult<usize> {
+    impl<'a> Read for &'a SerialStream
+    {
+        fn read(&mut self, bytes: &mut [u8]) -> StdIoResult<usize>
+        {
             uninterruptibly!(match unsafe {
                 libc::read(
                     self.as_raw_fd(),
@@ -702,8 +776,10 @@ mod io {
         }
     }
 
-    impl<'a> Write for &'a SerialStream {
-        fn write(&mut self, bytes: &[u8]) -> StdIoResult<usize> {
+    impl<'a> Write for &'a SerialStream
+    {
+        fn write(&mut self, bytes: &[u8]) -> StdIoResult<usize>
+        {
             uninterruptibly!(match unsafe {
                 libc::write(
                     self.as_raw_fd(),
@@ -716,45 +792,60 @@ mod io {
             })
         }
 
-        fn flush(&mut self) -> StdIoResult<()> {
-            uninterruptibly!(termios::tcdrain(self.inner.as_raw_fd()).map_err(StdIoError::from))
+        fn flush(&mut self) -> StdIoResult<()>
+        {
+            uninterruptibly!(
+                termios::tcdrain(self.inner.as_raw_fd()).map_err(StdIoError::from)
+            )
         }
     }
 }
 
 #[cfg(windows)]
-mod io {
-    use super::{NativeBlockingSerialPort, SerialStream, StdIoResult};
-    use crate::sys;
-    use mio::windows::NamedPipe;
+mod io
+{
     use std::io::{Read, Write};
     use std::mem;
     use std::os::windows::prelude::*;
 
-    impl Read for SerialStream {
-        fn read(&mut self, bytes: &mut [u8]) -> StdIoResult<usize> {
+    use mio::windows::NamedPipe;
+
+    use super::{NativeBlockingSerialPort, SerialStream, StdIoResult};
+    use crate::sys;
+
+    impl Read for SerialStream
+    {
+        fn read(&mut self, bytes: &mut [u8]) -> StdIoResult<usize>
+        {
             self.pipe.read(bytes)
         }
     }
 
-    impl Write for SerialStream {
-        fn write(&mut self, bytes: &[u8]) -> StdIoResult<usize> {
+    impl Write for SerialStream
+    {
+        fn write(&mut self, bytes: &[u8]) -> StdIoResult<usize>
+        {
             self.pipe.write(bytes)
         }
 
-        fn flush(&mut self) -> StdIoResult<()> {
+        fn flush(&mut self) -> StdIoResult<()>
+        {
             self.pipe.flush()
         }
     }
 
-    impl AsRawHandle for SerialStream {
-        fn as_raw_handle(&self) -> RawHandle {
+    impl AsRawHandle for SerialStream
+    {
+        fn as_raw_handle(&self) -> RawHandle
+        {
             self.pipe.as_raw_handle()
         }
     }
 
-    impl IntoRawHandle for SerialStream {
-        fn into_raw_handle(self) -> RawHandle {
+    impl IntoRawHandle for SerialStream
+    {
+        fn into_raw_handle(self) -> RawHandle
+        {
             // Since NamedPipe doesn't impl IntoRawHandle we'll use AsRawHandle and bypass
             // NamedPipe's destructor to keep the handle in the current state
             let manual = mem::ManuallyDrop::new(self.pipe);
@@ -762,11 +853,14 @@ mod io {
         }
     }
 
-    impl FromRawHandle for SerialStream {
+    impl FromRawHandle for SerialStream
+    {
         /// This method can potentially fail to override the communication timeout
         /// value set in `sys::override_comm_timeouts` without any indication to the user.
-        unsafe fn from_raw_handle(handle: RawHandle) -> Self {
-            let inner = mem::ManuallyDrop::new(NativeBlockingSerialPort::from_raw_handle(handle));
+        unsafe fn from_raw_handle(handle: RawHandle) -> Self
+        {
+            let inner =
+                mem::ManuallyDrop::new(NativeBlockingSerialPort::from_raw_handle(handle));
             let pipe = NamedPipe::from_raw_handle(handle);
             sys::override_comm_timeouts(handle).ok();
 
@@ -776,24 +870,32 @@ mod io {
 }
 
 #[cfg(unix)]
-mod sys {
-    use super::{NativeBlockingSerialPort, SerialStream};
+mod sys
+{
     use std::os::unix::prelude::*;
 
-    impl AsRawFd for SerialStream {
-        fn as_raw_fd(&self) -> RawFd {
+    use super::{NativeBlockingSerialPort, SerialStream};
+
+    impl AsRawFd for SerialStream
+    {
+        fn as_raw_fd(&self) -> RawFd
+        {
             self.inner.as_raw_fd()
         }
     }
 
-    impl IntoRawFd for SerialStream {
-        fn into_raw_fd(self) -> RawFd {
+    impl IntoRawFd for SerialStream
+    {
+        fn into_raw_fd(self) -> RawFd
+        {
             self.inner.into_raw_fd()
         }
     }
 
-    impl FromRawFd for SerialStream {
-        unsafe fn from_raw_fd(fd: RawFd) -> Self {
+    impl FromRawFd for SerialStream
+    {
+        unsafe fn from_raw_fd(fd: RawFd) -> Self
+        {
             let port = NativeBlockingSerialPort::from_raw_fd(fd);
             Self { inner: port }
         }
@@ -801,13 +903,15 @@ mod sys {
 }
 
 #[cfg(windows)]
-mod sys {
+mod sys
+{
 
     use super::os_prelude::*;
     use super::StdIoResult;
     /// Overrides timeout value set by serialport-rs so that the read end will
     /// never wake up with 0-byte payload.
-    pub(crate) fn override_comm_timeouts(handle: RawHandle) -> StdIoResult<()> {
+    pub(crate) fn override_comm_timeouts(handle: RawHandle) -> StdIoResult<()>
+    {
         let mut timeouts = COMMTIMEOUTS {
             // wait at most 1ms between two bytes (0 means no timeout)
             ReadIntervalTimeout: 1,
@@ -828,14 +932,16 @@ mod sys {
 }
 
 #[cfg(unix)]
-impl Source for SerialStream {
+impl Source for SerialStream
+{
     #[inline(always)]
     fn register(
         &mut self,
         registry: &Registry,
         token: Token,
         interests: Interest,
-    ) -> StdIoResult<()> {
+    ) -> StdIoResult<()>
+    {
         SourceFd(&self.as_raw_fd()).register(registry, token, interests)
     }
 
@@ -845,24 +951,28 @@ impl Source for SerialStream {
         registry: &Registry,
         token: Token,
         interests: Interest,
-    ) -> StdIoResult<()> {
+    ) -> StdIoResult<()>
+    {
         SourceFd(&self.as_raw_fd()).reregister(registry, token, interests)
     }
 
     #[inline(always)]
-    fn deregister(&mut self, registry: &Registry) -> StdIoResult<()> {
+    fn deregister(&mut self, registry: &Registry) -> StdIoResult<()>
+    {
         SourceFd(&self.as_raw_fd()).deregister(registry)
     }
 }
 
 #[cfg(windows)]
-impl Source for SerialStream {
+impl Source for SerialStream
+{
     fn register(
         &mut self,
         registry: &Registry,
         token: Token,
         interest: Interest,
-    ) -> StdIoResult<()> {
+    ) -> StdIoResult<()>
+    {
         self.pipe.register(registry, token, interest)
     }
 
@@ -871,11 +981,13 @@ impl Source for SerialStream {
         registry: &Registry,
         token: Token,
         interest: Interest,
-    ) -> StdIoResult<()> {
+    ) -> StdIoResult<()>
+    {
         self.pipe.reregister(registry, token, interest)
     }
 
-    fn deregister(&mut self, registry: &Registry) -> StdIoResult<()> {
+    fn deregister(&mut self, registry: &Registry) -> StdIoResult<()>
+    {
         self.pipe.deregister(registry)
     }
 }
@@ -887,14 +999,17 @@ impl Source for SerialStream {
 /// - open_native_async
 ///
 /// These methods mirror the `open_native` methods of SerialPortBuilder
-pub trait SerialPortBuilderExt {
+pub trait SerialPortBuilderExt
+{
     /// Open a platform-specific interface to the port with the specified settings
     fn open_native_async(self) -> Result<SerialStream>;
 }
 
-impl SerialPortBuilderExt for SerialPortBuilder {
+impl SerialPortBuilderExt for SerialPortBuilder
+{
     /// Open a platform-specific interface to the port with the specified settings
-    fn open_native_async(self) -> Result<SerialStream> {
+    fn open_native_async(self) -> Result<SerialStream>
+    {
         SerialStream::open(&self)
     }
 }
